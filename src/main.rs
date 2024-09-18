@@ -56,7 +56,6 @@ fn main() {
                         } else {
                             println!("{}: {}", key, val)
                         }
-
                     }
                 },
                 _ => {
@@ -111,8 +110,6 @@ fn main() {
                     let mut statement = connection.prepare(query).unwrap();
                     let mut found = false;
                     while let Ok(State::Row) = statement.next() {
-                        //let key = statement.read::<String, _>("key").unwrap().blue();
-                        //let val = statement.read::<String, _>("value").unwrap().green();
                         connection.execute(format!("UPDATE astore SET value = '{}' WHERE key = '{}'", value, key)).unwrap();
                         println!("Updating existing entry...");
                         found = true;
