@@ -12,7 +12,17 @@ fn get_output(text: String) -> String {
 }
 
 fn print_help() {
-    println!("{}", String::from("Help me.").red())
+    println!("ACTSTORE: v{} by Technomancer", env!("CARGO_PKG_VERSION"));
+    println!("{} <key> <value>: sets a value", String::from("set").blue());
+    println!("{} <key>: prints a value", String::from("get").blue());
+    println!("{} <key>: deletes a value", String::from("delete").blue());
+    println!("{}: show all entries", String::from("ls").blue());
+    println!("{} <key> <note>: sets a note for the key", String::from("note").blue());
+    println!("{}: runs value through xdg-open", String::from("open").blue());
+    println!("{}: runs value as shell command", String::from("run").blue());
+    println!("{}: treats value as path to text file to open in ACT_EDITOR", String::from("edit").blue());
+    println!("{}: this help message", String::from("help").blue());
+    println!("{}: print only the version", String::from("version").blue());
 }
 
 fn split_first_word(s: &str) -> (&str, &str) {
@@ -32,16 +42,27 @@ fn main() {
         1 => print_help(),
         2 => {
             match args[1].as_str() {
+                "help" | "h" => print_help(),
+                "version" | "ver" | "v" => println!(env!("CARGO_PKG_VERSION")),
                 "ls" => {
                     let query = format!("SELECT * FROM astore;");
                     let mut statement = connection.prepare(query).unwrap();
                     while let Ok(State::Row) = statement.next() {
                         let key = statement.read::<String, _>("key").unwrap().blue();
                         let val = statement.read::<String, _>("value").unwrap().green();
-                        println!("{}: {}", key, val)
+                        let note = statement.read::<String, _>("note").unwrap().yellow();
+                        if !note.is_empty() {
+                            println!("{}: {}  # {}", key, val, note)
+                        } else {
+                            println!("{}: {}", key, val)
+                        }
+
                     }
                 },
-                _ => println!("This is not the answer."),
+                _ => {
+                    eprintln!("error: invalid command");
+                    print_help();
+                },
             }
         },
         3.. => {
@@ -49,21 +70,84 @@ fn main() {
             let ln = &args[2..].join(" ");
 
             match &cmd[..] {
-                "set" => {
-                    let (key, value) = split_first_word(ln);
-                    let query = format!("
-                        CREATE TABLE IF NOT EXISTS astore (key TEXT, value TEXT);
-                        INSERT INTO astore VALUES ('{}', '{}');
-                    ", key, value);
-                    connection.execute(query).unwrap();
+                "d" | "del" | "delete" | "unset" | "rm" | "remove" | "rem" => {
+                    let mut exists = false;
+
+                    let query = format!("SELECT * FROM astore where key = '{}';", ln);
+                    let mut statement = connection.prepare(query).unwrap();
+                    while let Ok(State::Row) = statement.next() {
+                        exists = true;
+                    }
+
+                    if exists == true {
+                        connection.execute(format!("DELETE FROM astore WHERE key = '{}';", ln)).unwrap();
+                        println!("Dropping key {}", ln);
+                    } else {
+                        println!("Key {} not found.", ln);
+                    }
+
                 },
-                "get" => {
+                "note" => {
+                    let (key, value) = split_first_word(ln);
+
+                    //Sanity check, see if it exists already
+                    let query = format!("SELECT * FROM astore where key = '{}';", key);
+                    let mut statement = connection.prepare(query).unwrap();
+                    let mut found = false;
+                    while let Ok(State::Row) = statement.next() {
+                        connection.execute(format!("UPDATE astore SET note = '{}' WHERE key = '{}'", value, key)).unwrap();
+                        println!("Updating note...");
+                        found = true;
+                    }
+                    if !found {
+                        println!("Entry not found")
+                    }
+                },
+                "set" | "save" | "sv" | "s" => {
+                    let (key, value) = split_first_word(ln);
+
+                    //Sanity check, see if it exists already
+                    let query = format!("SELECT * FROM astore where key = '{}';", key);
+                    let mut statement = connection.prepare(query).unwrap();
+                    let mut found = false;
+                    while let Ok(State::Row) = statement.next() {
+                        //let key = statement.read::<String, _>("key").unwrap().blue();
+                        //let val = statement.read::<String, _>("value").unwrap().green();
+                        connection.execute(format!("UPDATE astore SET value = '{}' WHERE key = '{}'", value, key)).unwrap();
+                        println!("Updating existing entry...");
+                        found = true;
+                    }
+
+                    if !found {
+                        let query = format!("
+                            CREATE TABLE IF NOT EXISTS astore (key TEXT, value TEXT, note TEXT);
+                            INSERT INTO astore VALUES ('{}', '{}', '{}');
+                        ", key, value, String::new());
+                        connection.execute(query).unwrap();
+                        println!("Saved.");
+                    }
+
+                },
+                "get" | "show" | "g" => {
                     let query = format!("SELECT * FROM astore where key = '{}';", ln);
                     let mut statement = connection.prepare(query).unwrap();
                     while let Ok(State::Row) = statement.next() {
                         let key = statement.read::<String, _>("key").unwrap().blue();
                         let val = statement.read::<String, _>("value").unwrap().green();
-                        println!("{}: {}", key, val)
+                        let note = statement.read::<String, _>("note").unwrap().blue();
+                        if !note.is_empty() {
+                            println!("{}: {}  # {}", key, val, note)
+                        } else {
+                            println!("{}: {}", key, val)
+                        }
+                    }
+                },
+                "open" | "url" => {
+                    let query = format!("SELECT * FROM astore where key = '{}';", ln);
+                    let mut statement = connection.prepare(query).unwrap();
+                    while let Ok(State::Row) = statement.next() {
+                        let val = statement.read::<String, _>("value").unwrap();
+                        get_output(format!("xdg-open {}", val));
                     }
                 },
                 "run" => {
@@ -72,6 +156,14 @@ fn main() {
                     while let Ok(State::Row) = statement.next() {
                         let val = statement.read::<String, _>("value").unwrap();
                         get_output(val);
+                    }
+                },
+                "edit" => {
+                    let query = format!("SELECT * FROM astore where key = '{}';", ln);
+                    let mut statement = connection.prepare(query).unwrap();
+                    while let Ok(State::Row) = statement.next() {
+                        let val = statement.read::<String, _>("value").unwrap();
+                        get_output(format!("{} {}", env::var("ACT_EDITOR").expect("Missing ACT_EDITOR environment variable."), val));
                     }
                 },
                 _ => {
